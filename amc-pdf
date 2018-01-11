@@ -1,0 +1,803 @@
+#!/bin/bash
+
+
+################################################################################
+# 
+# AMC-PDF
+# 
+# Makes a pdf of AMC 8/10/12, AIME, USA(J)MO contests.
+# It doesn't always work.
+# 
+# The usage is simple, for example:
+# ./amc-pdf 2008 amc 8
+# ./amc-pdf 2013 amc 10a
+# ./amc-pdf 2016 amc 12b
+# ./amc-pdf 2011 aime i
+# ./amc-pdf 2010 usamo
+#
+# You need this stuff installed:
+# -- Tex Live with many packages
+# -- Asymptote with olympiad and cse5 packages
+# -- latexmk
+# -- curl
+#
+################################################################################
+
+
+
+# Too few arguments
+if [[ $# -lt 1 || $# -gt 3 || $1 == *-h* ]]; then
+    >&2 echo "Usage: $0 YEAR CONTEST"
+    >&2 echo "for example, $0 2008 amc 8  "
+    >&2 echo "             $0 2013 amc 10a"
+    >&2 echo "             $0 2016 amc 12b"
+    >&2 echo "             $0 2011 aime i "
+    >&2 echo "             $0 2010 usamo  "
+    exit 1
+fi
+
+# handle input
+CONTESTNAME=$(echo "$@" | tr [:lower:] [:upper:])
+CONTESTYEAR=$(echo "$CONTESTNAME" | sed 's/^[^0-9]*\([0-9]*\).*$/\1/')
+CONTEST=$(echo "$CONTESTNAME" | sed 's/ /_/g')
+CONTESTNOYEAR=$(echo "$CONTESTNAME" | sed 's/[0-9]*\s*\(.*\)/\1/')
+FULLNAME='American Mathematics Contest'
+N_PROBS=25
+ANNUAL=''
+
+case "$CONTEST" in
+    *AMC*)      N_PROBS=25 ;;
+    *AIME*)     N_PROBS=15 ;;
+    *USA*MO*)   N_PROBS=6  ;;
+esac
+
+# if AIME, make sure that either I or II is specified
+if [[ "$CONTESTNOYEAR" == AIME* ]]; then
+    if [[ ! "$CONTESTNOYEAR" =~ ^AIME\ II?$ ]]; then
+        echo "Please specify AIME I or AIME II"
+        exit 1
+    fi
+fi
+
+case "$CONTESTNOYEAR" in
+    'AMC 8')    FULLNAME='American Mathematics Contest 8'                           ;;
+    'AMC 10A')  FULLNAME='American Mathematics Contest 10 A'                        ;;
+    'AMC 10B')  FULLNAME='American Mathematics Contest 10 B'                        ;;
+    'AMC 12A')  FULLNAME='American Mathematics Contest 12 A'                        ;;
+    'AMC 12B')  FULLNAME='American Mathematics Contest 12 B'                        ;;
+    'AIME I')   FULLNAME='American Invitational Mathematics Examination I'          ;;
+    'AIME II')  FULLNAME='American Invitational Mathematics Examination II'         ;;
+    'USAMO')    FULLNAME='United States of America Mathematical Olympiad'           ;;
+    'USAJMO')   FULLNAME='United States of America Junior Mathematical Olympiad'    ;;
+esac
+
+case "$CONTESTNOYEAR" in
+    'AMC 8')    ANNUAL=$(($CONTESTYEAR - 1984)) ;;
+    'AMC 10'*)  ANNUAL=$(($CONTESTYEAR - 1999)) ;;
+    'AMC 12'*)  ANNUAL=$(($CONTESTYEAR - 1949)) ;;
+    AIME*)      ANNUAL=$(($CONTESTYEAR - 1982)) ;;
+    USAMO)      ANNUAL=$(($CONTESTYEAR - 1971)) ;;
+    USAJMO)     ANNUAL=$(($CONTESTYEAR - 2009)) ;;
+esac
+
+
+# important functions
+download () {
+    URL="https://artofproblemsolving.com/wiki/index.php?title=${1}&action=edit"
+    curl -L -s "$URL"
+}
+
+# convert wiki math to real LaTeX
+# by using regex
+latexify () {
+    echo "$1" | sed 's/&lt;/</g' | sed 's/&gt;/>/g'               | \
+        sed 's/&ndash;/--/g' | sed 's/&mdash;/---/g'              | \
+        sed 's/&amp;ndash;/--/g' | sed 's/&amp;mdash;/---/g'      | \
+        sed 's/<!--[^>]*-->//g'                                   | \
+        sed 's/<\/\?onlyinclude>//g'                              | \
+        sed 's/\([^\\]\)\\;/\1\\ /g'                              | \
+        sed -n '/<textarea/,/<\/textarea>/p; /<\/textarea>/q'     | \
+        sed 's/^.*<textarea[^>]*>\(.*\)$/\1/'                     | \
+        sed 's/\([^<]*\)<\/textarea.*$/\1/'                       | \
+        sed 's/±/pm/g' | sed 's/∘/^\\circ/g'                      | \
+        sed 's/\\implies/\\Rightarrow/g'                          | \
+        sed 's/\([^\\]\)\([\\]*\)\2%/\1\2\2\\%/g'                 | \
+        sed 's/<\/\?math>/$/g' | sed 's/&amp;/\&/g'               | \
+        sed 's/<cmath>/\\[ /g' | sed 's/<\/cmath>/ \\]/g'         | \
+        sed 's/<asy>/\n\n\\begin{minipage}[c]{\\linewidth}\n\\centering\n\\begin{asy}/g' | \
+        sed 's/<\/asy>/\n\\end{asy}\n\\end{minipage}\n\n/g'       | \
+        sed 's/\$\s*\\begin{align\(\*\?\)}/\\begin{align\1}/g'    | \
+        sed 's/\\end{align\(\*\?\)}\s*\$/\\end{align\1}/g'        | \
+        sed 's/\\begin{align\(\*\?\)}\s*\$/\\begin{align\1}/g'    | \
+        sed 's/\$\s*\\end{align\(\*\?\)}/\\end{align\1}/g'        | \
+        sed 's/\\\[\s*\\begin{align\(\*\?\)}/\\begin{align\1}/g'  | \
+        sed 's/\\end{align\(\*\?\)}\s*\\\]/\\end{align\1}/g'      | \
+        sed 's/\\\[\s*\\begin{eqnarray\(\*\?\)}/\\begin{eqnarray\1}/g'  | \
+        sed 's/\\end{eqnarray\(\*\?\)}\s*\\\]/\\end{eqnarray\1}/g'      | \
+        sed '/\\begin{asy}/,/\\end{asy}/ { /^\s*$/d }'            | \
+        sed 's/\\sin\([A-Za-z]\)/\\sin \1/g'                      | \
+        sed 's/\\cos\([A-Za-z]\)/\\cos \1/g'                      | \
+        sed 's/\\tan\([A-Za-z]\)/\\tan \1/g'                      | \
+        sed 's/<\/\?center>//gi' | sed 's/<\/\? \?br \?\/\?>//gi' | \
+        sed 's/__TOC__//'                                         | \
+        sed 's/<geogebra>\(\w*\)<\/geogebra>/Geogebra: \1/g'      | \
+        sed "s/'''\\([^']\\+\\)'''/\\\\textbf{\\1}/g"             | \
+        sed 's/<i>/\\textit{/gi' | sed 's/<\/i>/}/gi'             | \
+        sed 's/<b>/\\textbf{/gi' | sed 's/<\/b>/}/gi'             | \
+        sed 's/\[\[Category:[^]]*\]\]//gi'                        | \
+        sed 's/\[\[\([^]|]\+\)\]\]/\1/g'                          | \
+        sed 's/\[\[[^]|]\+|\([^]]\+\)\]\]/\1/g'                   | \
+        sed 's/<ol>/ \\begin{enumerate} /I' | sed 's/<\/ol>/ \\end{enumerate} /I' | \
+        sed 's/<ul>/ \\begin{itemize} /I'   | sed 's/<\/ul>/ \\end{itemize} /I'   | \
+        sed 's/<li>/\\item /I' | sed 's/<\/li>//I'
+}
+
+dl_date () {
+    HTML=$(download "$1")
+    echo "$HTML" | grep -i 'page does not exist' &> /dev/null
+    if [[ $? -eq 0 ]]; then 
+        >&2 echo -ne '\x1b[31;1mThe requested contest does not exist!\x1b[0m\n'
+        return 1
+    fi
+    TEXT=$(echo "$HTML" | sed -n '/<textarea/,/<\/textarea>/p; /<\/textarea>/q')
+    HELD_ON=$(echo "$TEXT" | grep 'held on')
+    [[ $? -ne 0 ]] && return
+    DATE=$(echo "$HELD_ON" | sed 's/.*held on \([^.]*\)\..*/\1/')
+    date -d "$DATE" '+%A, %B %-d, %Y'
+}
+
+dl_ps () {
+    HTML=$(download "$1")
+
+# check for #REDIRECT
+    REDIR=$(echo "$HTML" | grep '#REDIRECT')
+    if [[ -n "$REDIR" ]]; then
+        NEWPROB=$(echo "$REDIR" | sed 's/^[^[]*\[\[\([^]]*\).*$/\1/' | \
+            sed 's/ /_/g')
+        dl_ps "$NEWPROB"
+        return
+    fi
+
+# parse html with regex and convert to LaTeX
+    latexify "$HTML" | sed -e '1d' -e '$d'
+}
+
+dl_ans () {
+    HTML=$(download "$1")
+
+# parse html with regex, and extract answers
+    TEXT=$(latexify "$HTML" | sed '/./,$!d' | tac | sed '/./,$!d' | tac)
+
+    echo "$TEXT" | head -n 1 | grep -i 'return to' &> /dev/null
+    [[ $? -eq 0 ]] && TEXT=$(echo "$TEXT" | sed '1d')
+    echo "$TEXT" | tail -n 1 | grep -i 'box.*|.*year' &> /dev/null
+    [[ $? -eq 0 ]] && TEXT=$(echo "$TEXT" | sed '$d')
+
+    echo "$TEXT" | grep '\\begin{enumerate}' &> /dev/null
+# normal list
+    if [[ $? -ne 0 ]]; then
+        if [[ $(echo "$TEXT" | grep -c '#') -ge "$N_PROBS" ]]; then
+            ANS=$(echo "$TEXT" | sed '/^\s*$/d' | sed 's/^\s*#\?\s*\(.*\)$/\\item \1/')
+        else
+            ANS=$(echo "$TEXT" | sed '/^\s*$/d' | sed 's/^\s*\S*\s*\(.*\)$/\\item \1/')
+        fi
+# wiki list
+    else
+        ANS=$(echo "$TEXT" | sed '/^\s*$/d')
+    fi
+
+    echo -e "\\\\begin{enumerate}\n"
+    echo "$ANS"
+    echo -e "\n\\\\end{enumerate}\n"
+}
+
+parse_prob () {
+# check if '==Problem==' if exists
+    echo "$1" | grep '^==.*Problem.*$' &> /dev/null
+    if [[ $? -ne 0 ]]; then
+        PROB=$(echo "$1" | sed -n '1,/==.*Solution/p' | sed '$d')
+    else
+        PROB=$(echo "$1" | sed -n '/==.*Problem/,/==.*Solution/p' | \
+            sed -e '1d' -e '$d')
+    fi
+
+    echo "$PROB" | sed 's/==\+\([^=]*\)==\+/\\noindent \\textbf{\1} \\newline/g'
+}
+
+parse_soln () {
+    SOLN=$(echo "$1" | sed -n '/==.*[Ss]olution/,/==\?.*[Ss]ee [Aa]lso/p' | \
+        sed -e '1d' -e '$d' | sed '/./,$!d')
+    if [[ $(echo "$SOLN" | head -n 1) == ==*[Ss]olution*== ]]; then
+        SOLN=$(echo "$SOLN" | sed '1d')
+    fi
+    SOLN_MULT=$(echo "$SOLN" | sed 's/^[^=]*==\+.*[Ss]olution.*$/\n\\begin{center}--- OR ---\\end{center}\n/')
+
+    echo "$SOLN_MULT" | sed 's/==\+\([^=]*\)==\+/\\noindent \\textbf{\1} \\newline/g'
+}
+
+
+
+# begin creating pdf
+TMPDIR=$(mktemp -d)
+CURDIR=$(pwd)
+PROBFILE="$TMPDIR/problems.tex"
+SOLNFILE="$TMPDIR/solutions.tex"
+TEMPFILE="$TMPDIR/template.tex"
+LOGOFILE="$TMPDIR/logo.png"
+LOGOTEXT="$TMPDIR/logo.txt"
+ICOSFILE="$TMPDIR/icos.png"
+ICOSTEXT="$TMPDIR/icos.txt"
+
+>&2 echo -ne "Downloading contest information\r"
+CONTESTDATE=$(dl_date "$CONTEST") || exit 1
+[[ -z "$CONTESTDATE" ]] && CONTESTDATE="$CONTESTYEAR"
+
+# the logo
+cat > "$LOGOTEXT" << EOF
+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
+AAAAAElFTkSuQmCC
+EOF
+base64 -d "$LOGOTEXT" > "$LOGOFILE"
+
+# the icosahedron
+cat > "$ICOSTEXT" << EOF
+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
+EOF
+base64 -d "$ICOSTEXT" > "$ICOSFILE"
+
+# the LaTeX template
+cat > "$TEMPFILE"  << EOF
+\\documentclass[11pt]{article}
+\\usepackage{amsmath, amsfonts, amssymb, amsthm}
+\\usepackage[pdftex]{graphicx}
+\\usepackage{tipa}
+%\\usepackage{lmodern}
+\\usepackage[T1]{fontenc}
+\\usepackage[utf8]{inputenc}
+\\usepackage{microtype}
+\\usepackage[margin=1.5in]{geometry}
+\\usepackage{underscore}
+\\usepackage{textpos}
+\\usepackage{asymptote}
+\\usepackage{enumitem}
+\\usepackage[super]{nth}
+\\usepackage{fancyhdr}
+\\pagestyle{fancy}
+% https://tex.stackexchange.com/questions/96680/a-better-notation-to-denote-arcs-for-an-american-high-school-textbook
+\\newcommand{\\overarc}[1]{\\setbox9=\\hbox{#1} \\ooalign{\\resizebox{\\wd9}{\\height}{\\texttoptiebar{\\phantom{A}}}\\cr#1}}
+% https://tex.stackexchange.com/questions/22100/the-bar-and-overline-commands
+\\newcommand{\\overbar}[1]{\\mkern 1.5mu\\overline{\\mkern-1.5mu#1\\mkern-1.5mu}\\mkern 1.5mu}
+\\newcommand{\\contestname}{$CONTESTNAME}
+\\newcommand{\\maalogo}{\\includegraphics[width=.25\\textwidth]{$LOGOFILE}}
+\\newsavebox{\\icosahedron}
+\\savebox{\\icosahedron}{\\includegraphics[width=.45\\textwidth]{$ICOSFILE}}
+\\newlength{\\icosheight}
+\\settoheight{\\icosheight}{\\usebox{\\icosahedron}}
+\\renewcommand{\\headrulewidth}{0pt}
+\\renewcommand{\\footrulewidth}{0pt}
+\\rhead{\\thepage}
+\\cfoot{}
+\\newlength{\\oldfboxsep}  \\setlength{\\oldfboxsep}{\\fboxsep}
+\\newlength{\\oldfboxrule} \\setlength{\\oldfboxrule}{\\fboxrule}
+\\setlength{\\fboxsep}{1em}
+\\setlength{\\fboxrule}{2pt}
+\\begin{asydef}
+import olympiad;
+import cse5;
+size(8cm);
+settings.prc=false;
+\\end{asydef}
+EOF
+
+# the problems file
+cat "$TEMPFILE" >> "$PROBFILE"
+cat >> "$PROBFILE" << EOF
+\\lhead{\\textit{\\contestname\\ Problems}}
+
+\\begin{document}
+\\thispagestyle{empty}
+\\noindent\\fbox{\\parbox{\\dimexpr \\textwidth - 2em - 4pt \\relax}{
+\\noindent\\maalogo
+
+\\vspace*{2em} 
+
+\\textsf{American Mathematics Competitions}
+
+\\vspace*{1em} 
+
+\\textsf{\\nth{$ANNUAL} Annual}
+
+\\vspace*{1em} 
+
+\\scalebox{3}[3.5]{\\textsf{\\textbf{$CONTESTNOYEAR}}}
+
+\\vspace*{1em} 
+
+\\scalebox{.9}[1]{\\textsf{\\textbf{$FULLNAME}}}
+
+\\textsf{\\textbf{$CONTESTDATE}}
+
+}}
+
+\\vspace*{\\dimexpr -1\\icosheight - 2pt \\relax}
+\\begin{textblock}{\\textwidth}(0,0)
+\\noindent\\makebox[\\dimexpr \\textwidth - 2pt \\relax][r]{\\usebox{\\icosahedron}}
+\\end{textblock}
+\\vspace{\\dimexpr \\icosheight + 2pt \\relax}
+
+\\begin{center}
+\\textbf{INSTRUCTIONS}
+\\end{center}
+
+\\begin{enumerate}[leftmargin=*,itemsep=0pt]
+\\item DO NOT OPEN THIS BOOKLET UNTIL YOUR PROCTOR TELLS YOU.
+\\item AMC 8/10/12: This is a twenty-five question multiple choice test. Each question is followed by answers marked A, B, C, D and E. Only one of these is correct.
+\\item AMC 8: You have 40 minutes to complete the test. Your score on this test is the number of correct answers. There is no penalty for guessing.
+\\item AMC 10/12: You have 75 minutes to complete the test. You will receive 6 points for each correct answer, 1.5 points for each problem left unanswered, and 0 points for each incorrect answer.
+\\item AIME: This is a 15-question, 3-hour examination. All answers are integers ranging from 000 to 999, inclusive. Your score will be the number of correct answers; i.e., there is neither partial credit nor a penalty for wrong answers.
+\\item No aids are permitted other than scratch paper, graph paper, rulers, compass, protractors, and erasers. No calculators are allowed. No problems on the test will \\textit{require} the use of a calculator.
+\\item Figures are not necessarily drawn to scale.
+\\end{enumerate}
+
+\\footnotesize{
+\\noindent The publication, reproduction or communication of the problems or solutions of the contest during the period when students are eligible to participate seriously jeopardizes the integrity of the results. Dissemination via copier, telephone, e-mail, World Wide Web or media of any type during this period is a violation of the competition rules. After the contest period, permission to make copies of problems in paper or electronic form including posting on web-pages for educational use is granted without fee provided that copies are not made or distributed for profit or commercial advantage and that copies bear the copyright notice.
+
+\\vfill
+
+\\begin{center}
+\\copyright $CONTESTYEAR\\ Mathematical Association of America
+\\end{center}
+}
+\\normalsize
+
+\\newpage
+
+\setlength{\\fboxsep}{\\oldfboxsep}
+\setlength{\\fboxrule}{\\oldfboxrule}
+
+EOF
+
+# the solutions file
+cat "$TEMPFILE" >> "$SOLNFILE"
+cat >> "$SOLNFILE" << EOF
+\\lhead{\\textit{\\contestname\\ Solutions}}
+
+\\begin{document}
+\\thispagestyle{empty}
+\\noindent\\fbox{\\parbox{\\dimexpr \\textwidth - 2em - 4pt \\relax}{
+\\noindent\\maalogo
+
+\\vspace*{1em} 
+
+\\scalebox{1.8}[2]{\\textsf{\\textbf{Solutions Pamphlet}}} \\\\
+\\textsf{American Mathematics Competitions}
+
+\\vspace*{8em} 
+
+\\textsf{\\nth{$ANNUAL} Annual}
+
+\\vspace*{1em} 
+
+\\scalebox{3}[3.5]{\\textsf{\\textbf{$CONTESTNOYEAR}}}
+
+\\vspace*{1em} 
+
+\\scalebox{.9}[1]{\\textsf{\\textbf{$FULLNAME}}}
+
+\\textsf{\\textbf{$CONTESTDATE}}
+
+}}
+
+\\vspace*{\\dimexpr -1\\icosheight - 2pt \\relax}
+\\begin{textblock}{\\textwidth}(0,0)
+\\noindent\\makebox[\\dimexpr \\textwidth - 2pt \\relax][r]{\\usebox{\\icosahedron}}
+\\end{textblock}
+\\vspace{\\dimexpr \\icosheight + 2pt \\relax}
+
+\\vspace*{1em} 
+
+\\noindent This Pamphlet gives at least one solution for each problem on this year’s contest and shows that all problems can be solved without the use of a calculator. When more than one solution is provided, this is done to illustrate a significant contrast in methods, e.g., algebraic \\textit{vs} geometric, computational \\textit{vs} conceptual, elementary \\textit{vs} advanced. These solutions are by no means the only ones possible, nor are they superior to others the reader may devise.
+
+\\vspace*{1em} 
+
+\\noindent We hope that teachers will inform their students about these solutions, both as illustrations of the kinds of ingenuity needed to solve nonroutine problems and as examples of good mathematical exposition. \\textit{However, the publication, reproduction or communication of the problems or solutions of the contest during the period when students are eligible to participate seriously jeopardizes the integrity of the results. Dissemination via copier, telephone, email, internet or media of any type during this period is a violation of the competition rules.}
+
+\\vspace*{1em} 
+
+\\footnotesize{
+\\noindent After the contest period, permission to make copies of problems in paper or electronic form including posting on web-pages for educational use is granted without fee provided that copies are not made or distributed for profit or commercial advantage and that copies bear the copyright notice.
+
+\\vfill
+
+\\begin{center}
+\\copyright $CONTESTYEAR\\ Mathematical Association of America
+\\end{center}
+}
+\\normalsize
+
+\\newpage
+
+\setlength{\\fboxsep}{\\oldfboxsep}
+\setlength{\\fboxrule}{\\oldfboxrule}
+
+EOF
+
+# make answer key
+if [[ "$CONTEST" != *USA*MO* ]]; then
+    >&2 echo -ne "Downloading answers              \r"
+    ANSKEY=$(dl_ans "${CONTEST}_Answer_Key")
+    echo -e "\\\\begin{center}\n\\\\textbf{Answer Key}\n\\\\end{center}\n" >> "$SOLNFILE"
+    echo "$ANSKEY"      >> "$SOLNFILE"
+    echo "\\newpage"    >> "$SOLNFILE"
+    echo -e "\n"        >> "$SOLNFILE"
+fi
+
+# make problems and solutions
+echo "\\begin{enumerate}" >> "$PROBFILE"
+echo "\\begin{enumerate}" >> "$SOLNFILE"
+for N in $(seq $N_PROBS); do
+    >&2 echo -ne "Downloading problem $N of $N_PROBS          \r"
+    PROBSOLN=$(dl_ps "${CONTEST}_Problems/Problem_$N")
+    PROBLEM=$(parse_prob "$PROBSOLN")
+    SOLUTION=$(parse_soln "$PROBSOLN")
+    echo -n "\\item " >> "$PROBFILE"
+    echo "$PROBLEM"   >> "$PROBFILE"
+    echo -e "\n"      >> "$PROBFILE"
+    echo -n "\\item " >> "$SOLNFILE"
+    echo "$SOLUTION"  >> "$SOLNFILE"
+    echo -e "\n"      >> "$SOLNFILE"
+done
+>&2 echo ''
+echo "\\end{enumerate}" >> "$PROBFILE"
+echo "\\end{enumerate}" >> "$SOLNFILE"
+echo "\\end{document}"  >> "$PROBFILE"
+echo "\\end{document}"  >> "$SOLNFILE"
+
+
+# check for asymptote packages
+cd "$TMPDIR"
+asy <<< "import olympiad;" &> /dev/null
+if [[ $? -ne 0 ]]; then
+    >&2 echo -ne '\x1b[37;1mNOTE: \x1b[0m'
+    >&2 echo 'You are missing the Olympiad package for Asymptote'
+    >&2 echo 'Attempting to download olympiad.asy'
+    curl -L -O 'https://math.berkeley.edu/~monks/images/olympiad.asy'
+    echo ''
+fi
+
+asy <<< "import cse5;" &> /dev/null
+if [[ $? -ne 0 ]]; then
+    >&2 echo -ne '\x1b[37;1mNOTE: \x1b[0m'
+    >&2 echo 'You are missing the cse5 package for Asymptote'
+    >&2 echo 'Attempting to download cse5.asy'
+    curl -L -O 'https://raw.githubusercontent.com/vEnhance/dotfiles/master/asy/cse5.asy'
+    echo ''
+fi
+
+# add Asymptote support to latexmk
+# https://github.com/vectorgraphics/asymptote/blob/master/doc/latexmkrc
+cd "$TMPDIR"
+cat > "latexmkrc" << EOF
+sub asy {return system("asy '\$_[0]'");}
+add_cus_dep("asy","eps",0,"asy");
+add_cus_dep("asy","pdf",0,"asy");
+add_cus_dep("asy","tex",0,"asy");
+EOF
+
+# compile
+latexmk -quiet -pdflatex="pdflatex -interaction=nonstopmode -file-line-error" -pdf -f "$PROBFILE"
+[[ $? -ne 0 ]] && \
+    >&2 echo -ne '\x1b[31;1mThere may have been errors compiling!\x1b[0m\n'
+latexmk -quiet -pdflatex="pdflatex -interaction=nonstopmode -file-line-error" -pdf -f "$SOLNFILE"
+[[ $? -ne 0 ]] && \
+    >&2 echo -ne '\x1b[31;1mThere may have been errors compiling!\x1b[0m\n'
+
+# copy output
+cd "$CURDIR"
+PROBBASE=$(basename "$PROBFILE" .tex)
+SOLNBASE=$(basename "$SOLNFILE" .tex)
+cp "$TMPDIR/${PROBBASE}.pdf" "$CURDIR/${CONTEST}_problems.pdf"
+cp "$TMPDIR/${SOLNBASE}.pdf" "$CURDIR/${CONTEST}_solutions.pdf"
+
+# deal with temporary files
+read -p "Delete temporary files? (Y/n) " answer
+if [[ "$answer" =~ ^[yY]$|^[yY][eE][sS]$|^$ ]]; then
+    rm -rf "$TMPDIR"
+else
+    >&2 echo -ne "\\x1b[37;1mTemporary files written to $TMPDIR\\x1b[0m\\n"
+fi
+
+exit 0
+
