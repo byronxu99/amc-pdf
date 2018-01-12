@@ -16,8 +16,8 @@
 # ./amc-pdf 2010 usamo
 #
 # You need this stuff installed:
-# -- Tex Live with many packages
-# -- Asymptote with olympiad and cse5 packages
+# -- Tex Live with many packages (another LaTeX distribution should also work)
+# -- Asymptote (olympiad and cse5 packages suggested)
 # -- latexmk
 # -- curl
 #

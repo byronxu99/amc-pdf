@@ -11,6 +11,7 @@ Sample output:
 ## Usage
 The script's dependecies are
 * bash
+* curl
 * A LaTeX distribution
 * Asymptote
 * latexmk
